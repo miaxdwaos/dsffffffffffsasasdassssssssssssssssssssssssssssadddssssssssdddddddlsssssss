@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Slender 3D - Optimized</title>
+    <title>Slender 3D - P2P Fixed</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
         body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; touch-action: none; }
@@ -13,7 +13,7 @@
         button { cursor: pointer; padding: 10px; border: none; border-radius: 4px; font-weight: bold; text-transform: uppercase; margin-top: 5px; }
         .btn-join { background: #27ae60; color: white; width: 100%; }
         .btn-start { background: #f1c40f; color: black; width: 100%; display: none; }
-        canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; image-rendering: pixelated; }
+        canvas { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
         .hidden { display: none !important; }
         #crosshair { position: absolute; top: 50%; left: 50%; color: rgba(255,255,255,0.5); transform: translate(-50%, -50%); z-index: 20; pointer-events: none; font-size: 20px; }
         #chat-container { position: absolute; bottom: 20px; left: 20px; width: 300px; z-index: 40; background: rgba(0,0,0,0.5); border-radius: 5px; display: flex; flex-direction: column; }
@@ -34,25 +34,26 @@
             <button class="btn-join" onclick="connectToHost()">UNIRSE AL JUEGO</button>
         </div>
         <button id="start-btn" class="btn-start" onclick="startGame()">INICIAR PARTIDA</button>
-        <div id="status-msg" style="color: #f1c40f; margin-top: 10px; font-size: 11px;">Usa WASD/Flechas.</div>
+        <div id="status-msg" style="color: #f1c40f; margin-top: 10px; font-size: 11px;">Mueve con FLECHAS o WASD.</div>
     </div>
 </div>
 
 <div id="chat-container">
     <div id="chat-messages"></div>
-    <input type="text" id="chat-input" placeholder="Escribe algo...">
+    <input type="text" id="chat-input" placeholder="Escribe y presiona Enter...">
 </div>
 
 <canvas id="gameCanvas"></canvas>
 
 <script>
     const canvas = document.getElementById('gameCanvas');
-    const ctx = canvas.getContext('2d', { alpha: false }); // Optimización
+    const ctx = canvas.getContext('2d');
     const chatMessages = document.getElementById('chat-messages');
     const chatInput = document.getElementById('chat-input');
 
+    // --- CARGA DE ASSETS ---
     const playerSprite = new Image();
-    playerSprite.src = 'GameContentSlender/PersonSpriteheh.png';
+    playerSprite.src = 'GameContentSlender/PersonSpriteheh.png'; // Ruta solicitada
     
     let worldMap = [
         [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
@@ -75,29 +76,34 @@
     const peer = new Peer();
     let myId, hostConn, connections = {}, players = {}, slenderman = { x: 8.5, y: 8.5, active: false };
     let gameStarted = false, notesCollected = 0, isDead = false, maxNotes = 0;
-    let slenderEffect = 0; // Control de gris
-
-    function getPlayerName(id) { return id ? id.substring(0, 4) : "???"; }
+    
+    function getPlayerName(id) {
+        if (!id) return "???";
+        return id.substring(0, 4); // Siempre retorna los 4 dígitos iniciales
+    }
 
     peer.on('open', id => {
         myId = id;
         document.getElementById('my-id').innerText = id;
-        players[id] = { id: id, x: 1.5, y: 1.5, isDead: false };
+        players[id] = { id: id, x: 1.5, y: 1.5, color: '#3498db', isDead: false };
     });
 
     peer.on('connection', conn => {
         conn.on('open', () => {
             connections[conn.peer] = conn;
-            players[conn.peer] = { id: conn.peer, x: 1.5, y: 1.5, isDead: false };
+            players[conn.peer] = { id: conn.peer, x: 1.5, y: 1.5, color: '#e67e22', isDead: false };
             addChatMessage("Sistema", `${getPlayerName(conn.peer)} se unió.`);
             updateLobbyUI();
             syncToAll();
         });
         conn.on('data', handleData);
+        conn.on('close', () => removePlayer(conn.peer));
     });
 
     function handleData(data) {
-        if (data.type === 'move') {
+        if (data.type === 'disconnect') {
+            removePlayer(data.id);
+        } else if (data.type === 'move') {
             if(players[data.id]) {
                 players[data.id].x = data.x;
                 players[data.id].y = data.y;
@@ -110,10 +116,6 @@
             if (!hostConn && worldMap[data.cx][data.cy] === 2) {
                 worldMap[data.cx][data.cy] = 0;
                 notesCollected++;
-                // AVISO GLOBAL DE PÁGINA
-                const msg = { type: 'chat', sender: 'Sistema', text: `¡${getPlayerName(data.id)} colectó una página!` };
-                handleData(msg);
-                broadcast(msg);
                 syncToAll();
             }
         } else if (data.type === 'update') {
@@ -126,17 +128,42 @@
                 document.getElementById('ui').classList.add('hidden');
             }
             let incoming = data.players;
+            for(let id in players) if(id !== myId && !incoming[id]) delete players[id];
             for(let id in incoming) if(id !== myId) players[id] = incoming[id];
         }
     }
 
-    function syncToAll() {
-        if(!hostConn) broadcast({ type: 'update', players, worldMap, slenderman, gameStarted, notesCollected, maxNotes });
+    window.addEventListener('beforeunload', () => {
+        const msg = { type: 'disconnect', id: myId };
+        if (hostConn && hostConn.open) hostConn.send(msg);
+        for (let id in connections) if (connections[id].open) connections[id].send(msg);
+    });
+
+    function removePlayer(peerId) {
+        if (players[peerId]) {
+            const pName = getPlayerName(peerId);
+            delete players[peerId];
+            if (connections[peerId]) {
+                connections[peerId].close();
+                delete connections[peerId];
+            }
+            if (Object.keys(players).length < 2) {
+                alert("Juego Reiniciandose, Todos Los jugadores en multiplayer se salieron");
+                location.reload();
+            } else {
+                addChatMessage("Sistema", `${pName} abandonó la sala.`);
+                updateLobbyUI();
+                syncToAll();
+            }
+        }
     }
 
-    function broadcast(data, exclude = null) {
-        for (let id in connections) if (connections[id].open && id !== exclude) connections[id].send(data);
-        if (hostConn && hostConn.open) hostConn.send(data);
+    function updateLobbyUI() {
+        const startBtn = document.getElementById('start-btn');
+        const playerCount = Object.keys(players).length;
+        if (!hostConn) {
+            startBtn.style.display = playerCount >= 2 ? 'block' : 'none';
+        }
     }
 
     function connectToHost() {
@@ -144,153 +171,197 @@
         if(!hId) return;
         hostConn = peer.connect(hId);
         hostConn.on('open', () => {
-            document.getElementById('ui').classList.add('hidden');
+            document.getElementById('setup-controls').classList.add('hidden');
+            document.getElementById('start-btn').classList.add('hidden');
             setInterval(() => {
-                if(hostConn.open) hostConn.send({ type: 'move', id: myId, x: posX, y: posY, isDead: isDead });
-            }, 40);
+                if(hostConn && hostConn.open) hostConn.send({ type: 'move', id: myId, x: posX, y: posY, isDead: isDead });
+            }, 30);
         });
         hostConn.on('data', handleData);
+        hostConn.on('close', () => { 
+            alert("Juego Reiniciandose, Todos Los jugadores en multiplayer se salieron"); 
+            location.reload(); 
+        });
     }
 
     function startGame() {
+        if (Object.keys(players).length < 2) return alert("Faltan jugadores.");
         gameStarted = true;
-        maxNotes = worldMap.flat().filter(v => v === 2).length;
+        notesCollected = 0; maxNotes = 0;
+        for(let r=0; r<worldMap.length; r++) {
+            for(let c=0; c<worldMap[r].length; c++) { if(worldMap[r][c] === 2) maxNotes++; }
+        }
         document.getElementById('ui').classList.add('hidden');
         slenderman.active = true;
         syncToAll();
     }
 
+    function broadcast(data, exclude = null) {
+        for (let id in connections) if (connections[id].open && id !== exclude) connections[id].send(data);
+        if (hostConn && hostConn.open) hostConn.send(data);
+    }
+
+    function syncToAll() {
+        if(!hostConn) broadcast({ type: 'update', players, worldMap, slenderman, gameStarted, notesCollected, maxNotes });
+    }
+
     function addChatMessage(sender, text) {
         const div = document.createElement('div');
-        const name = sender === 'Sistema' ? sender : (sender === myId ? "Tú" : getPlayerName(sender));
+        const name = sender === myId ? "Tú" : getPlayerName(sender);
         div.innerHTML = `<span style="color:#3498db">${name}:</span> ${text}`;
         chatMessages.appendChild(div);
         chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
-    // --- JUEGO ---
+    // --- MOVIMIENTO Y RENDER ---
     let posX = 1.5, posY = 1.5, dirX = 1, dirY = 0, planeX = 0, planeY = 0.66;
-    let moveSpeed = 0.07, rotSpeed = 0.04;
+    let moveSpeed = 0.08, rotSpeed = 0.05;
+
     let keys = {};
     window.onkeydown = e => { if(!chatInput.matches(':focus')) keys[e.code] = true; };
     window.onkeyup = e => keys[e.code] = false;
 
+    function handleMovement() {
+        if(!gameStarted || isDead) return;
+        
+        if (keys['ArrowRight'] || keys['KeyD']) {
+            let oldDirX = dirX;
+            dirX = dirX * Math.cos(rotSpeed) - dirY * Math.sin(rotSpeed);
+            dirY = oldDirX * Math.sin(rotSpeed) + dirY * Math.cos(rotSpeed);
+            let oldPlaneX = planeX;
+            planeX = planeX * Math.cos(rotSpeed) - planeY * Math.sin(rotSpeed);
+            planeY = oldPlaneX * Math.sin(rotSpeed) + planeY * Math.cos(rotSpeed);
+        }
+        
+        if (keys['ArrowLeft'] || keys['KeyA']) {
+            let oldDirX = dirX;
+            dirX = dirX * Math.cos(-rotSpeed) - dirY * Math.sin(-rotSpeed);
+            dirY = oldDirX * Math.sin(-rotSpeed) + dirY * Math.cos(-rotSpeed);
+            let oldPlaneX = planeX;
+            planeX = planeX * Math.cos(-rotSpeed) - planeY * Math.sin(-rotSpeed);
+            planeY = oldPlaneX * Math.sin(-rotSpeed) + planeY * Math.cos(-rotSpeed);
+        }
+
+        let moveX = (keys['ArrowUp'] || keys['KeyW'] ? 1 : (keys['ArrowDown'] || keys['KeyS'] ? -1 : 0));
+        let targetX = posX + dirX * moveSpeed * moveX;
+        let targetY = posY + dirY * moveSpeed * moveX;
+        
+        if(worldMap[Math.floor(targetX)] && worldMap[Math.floor(targetX)][Math.floor(posY)] !== 1) posX = targetX;
+        if(worldMap[Math.floor(posX)] && worldMap[Math.floor(posX)][Math.floor(targetY)] !== 1) posY = targetY;
+        
+        players[myId].x = posX; players[myId].y = posY;
+
+        let mx = Math.floor(posX), my = Math.floor(posY);
+        if(worldMap[mx] && worldMap[mx][my] === 2) {
+            let msg = { type: 'collect', cx: mx, cy: my };
+            if (hostConn) hostConn.send(msg); else handleData(msg);
+        }
+
+        if(!hostConn && slenderman.active) {
+            let closest = null, minDist = 999;
+            for(let id in players) {
+                if(!players[id].isDead) {
+                    let d = Math.hypot(players[id].x - slenderman.x, players[id].y - slenderman.y);
+                    if(d < minDist) { minDist = d; closest = players[id]; }
+                }
+            }
+            if(closest) {
+                let angle = Math.atan2(closest.y - slenderman.y, closest.x - slenderman.x);
+                slenderman.x += Math.cos(angle) * 0.025; slenderman.y += Math.sin(angle) * 0.025;
+            }
+            for(let id in players) {
+                if(!players[id].isDead && Math.hypot(players[id].x - slenderman.x, players[id].y - slenderman.y) < 0.45) {
+                    players[id].isDead = true;
+                    if (id === myId) isDead = true;
+                    syncToAll();
+                }
+            }
+        }
+    }
+
     function render() {
-        canvas.width = window.innerWidth / 1.5; // Resolución reducida para evitar lag
-        canvas.height = window.innerHeight / 1.5;
+        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
         const w = canvas.width, h = canvas.height;
-
-        // FILTRO GRIS
-        ctx.filter = `grayscale(${slenderEffect}%)`;
         ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h);
-
-        if(!gameStarted) { requestAnimationFrame(render); return; }
+        
+        if(!gameStarted) {
+            ctx.fillStyle = "white"; ctx.textAlign = "center"; 
+            ctx.fillText("MODO MULTIJUGADOR - USA FLECHAS O WASD", w/2, h/2);
+            requestAnimationFrame(render); return;
+        }
 
         let zBuffer = new Array(w);
         for(let x = 0; x < w; x++) {
             let cameraX = 2 * x / w - 1;
-            let rDX = dirX + planeX * cameraX, rDY = dirY + planeY * cameraX;
-            let mX = Math.floor(posX), mY = Math.floor(posY);
-            let dX = Math.abs(1/rDX), dY = Math.abs(1/rDY);
-            let sX, sY, sDX, sDY, hit = 0, side;
-            if(rDX < 0){ sX = -1; sDX = (posX - mX) * dX; } else { sX = 1; sDX = (mX + 1 - posX) * dX; }
-            if(rDY < 0){ sY = -1; sDY = (posY - mY) * dY; } else { sY = 1; sDY = (mY + 1 - posY) * dY; }
+            let rayDirX = dirX + planeX * cameraX, rayDirY = dirY + planeY * cameraX;
+            let mapX = Math.floor(posX), mapY = Math.floor(posY);
+            let deltaX = Math.abs(1 / rayDirX), deltaY = Math.abs(1 / rayDirY);
+            let stepX, stepY, sideDistX, sideDistY, hit = 0, side;
+            
+            if(rayDirX < 0) { stepX = -1; sideDistX = (posX - mapX) * deltaX; } else { stepX = 1; sideDistX = (mapX + 1.0 - posX) * deltaX; }
+            if(rayDirY < 0) { stepY = -1; sideDistY = (posY - mapY) * deltaY; } else { stepY = 1; sideDistY = (mapY + 1.0 - posY) * deltaY; }
+            
             while(hit === 0) {
-                if(sDX < sDY) { sDX += dX; mX += sX; side = 0; } else { sDY += dY; mY += sY; side = 1; }
-                if(worldMap[mX][mY] > 0) hit = worldMap[mX][mY];
+                if(sideDistX < sideDistY) { sideDistX += deltaX; mapX += stepX; side = 0; }
+                else { sideDistY += deltaY; mapY += stepY; side = 1; }
+                if(worldMap[mapX] && worldMap[mapX][mapY] > 0) hit = worldMap[mapX][mapY];
             }
-            let dist = (side === 0) ? (sDX - dX) : (sDY - dY);
-            zBuffer[x] = dist;
-            let lh = Math.floor(h / dist);
-            let color = hit === 2 ? 255 : Math.max(0, 150 - (dist * 15));
-            ctx.strokeStyle = hit === 2 ? "red" : `rgb(${side?color*0.5:color},${side?color*0.5:color},${side?color*0.5:color})`;
-            ctx.beginPath(); ctx.moveTo(x, h/2-lh/2); ctx.lineTo(x, h/2+lh/2); ctx.stroke();
+            
+            let perpDist = (side === 0) ? (sideDistX - deltaX) : (sideDistY - deltaY);
+            zBuffer[x] = perpDist;
+            let lineHeight = Math.floor(h / perpDist);
+            let color = hit === 2 ? 255 : Math.max(0, 150 - (perpDist * 15));
+            ctx.strokeStyle = hit === 2 ? `rgb(255,0,0)` : `rgb(${side?color*0.5:color},${side?color*0.5:color},${side?color*0.5:color})`;
+            ctx.beginPath(); ctx.moveTo(x, h/2-lineHeight/2); ctx.lineTo(x, h/2+lineHeight/2); ctx.stroke();
         }
 
         let sprites = [];
-        if(slenderman.active) sprites.push({...slenderman, isS: true, sX:0.5, sY:1.9});
-        for(let id in players) if(id !== myId && !players[id].isDead) sprites.push({...players[id], isS: false, sX:0.6, sY:1.0});
-
-        sprites.sort((a,b) => Math.hypot(posX-b.x, posY-b.y) - Math.hypot(posX-a.x, posY-a.y));
+        if(slenderman.active) sprites.push({...slenderman, isSlender: true, sX:0.5, sY:1.8});
+        for(let id in players) {
+            if(id !== myId && !players[id].isDead) {
+                sprites.push({...players[id], id: id, isSlender: false, sX:0.6, sY:1.0});
+            }
+        }
         
-        let tEff = 0;
+        sprites.sort((a,b) => Math.hypot(posX-b.x, posY-b.y) - Math.hypot(posX-a.x, posY-a.y));
         sprites.forEach(s => {
-            let rX = s.x - posX, rY = s.y - posY;
-            let inv = 1 / (planeX * dirY - dirX * planeY);
-            let tx = inv * (dirY * rX - dirX * rY), ty = inv * (-planeY * rX + planeX * rY);
+            let relX = s.x - posX, relY = s.y - posY;
+            let invDet = 1.0 / (planeX * dirY - dirX * planeY);
+            let tx = invDet * (dirY * relX - dirX * relY), ty = invDet * (-planeY * relX + planeX * relY);
             if(ty > 0.1) {
                 let sx = Math.floor((w/2) * (1 + tx / ty));
                 let sh = Math.abs(Math.floor(h / ty)) * s.sY, sw = Math.abs(Math.floor(h / ty)) * s.sX;
+                
                 if(sx > 0 && sx < w && ty < zBuffer[sx]) {
-                    if (s.isS) {
-                        // Slender: Cuerpo Negro, Cabeza Blanca
-                        ctx.fillStyle = "black"; ctx.fillRect(sx - sw/2, h/2 - sh/2 + (sh*0.2), sw, sh*0.8);
-                        ctx.fillStyle = "white"; ctx.fillRect(sx - sw/3, h/2 - sh/2, sw/1.5, sh*0.25);
-                        let d = Math.hypot(rX, rY);
-                        if(d < 5) tEff = Math.max(tEff, (1 - d/5) * 100);
+                    if (s.isSlender) {
+                        ctx.fillStyle = "#111";
+                        ctx.fillRect(sx - sw/2, h/2 - sh/2, sw, sh);
                     } else {
-                        ctx.drawImage(playerSprite, sx-sw/2, h/2-sh/2, sw, sh);
-                        ctx.fillStyle = "white"; ctx.fillText(getPlayerName(s.id), sx, h/2-sh/2-5);
+                        // Dibujar Sprite del Jugador
+                        ctx.drawImage(playerSprite, sx - sw/2, h/2 - sh/2, sw, sh);
+                        
+                        // Dibujar Nombre (4 dígitos) arriba
+                        ctx.fillStyle = "white";
+                        ctx.font = "bold 14px Arial";
+                        ctx.textAlign = "center";
+                        ctx.fillText(getPlayerName(s.id), sx, h/2 - sh/2 - 10);
                     }
                 }
             }
         });
 
-        slenderEffect = slenderEffect * 0.9 + tEff * 0.1;
         document.getElementById('note-count').innerText = notesCollected;
         document.getElementById('total-notes').innerText = maxNotes;
-
-        // Movimiento local
-        if(!isDead) {
-            if(keys['KeyD'] || keys['ArrowRight']) {
-                let oldDX = dirX; dirX = dirX * Math.cos(rotSpeed) - dirY * Math.sin(rotSpeed); dirY = oldDX * Math.sin(rotSpeed) + dirY * Math.cos(rotSpeed);
-                let oldPX = planeX; planeX = planeX * Math.cos(rotSpeed) - planeY * Math.sin(rotSpeed); planeY = oldPX * Math.sin(rotSpeed) + planeY * Math.cos(rotSpeed);
-            }
-            if(keys['KeyA'] || keys['ArrowLeft']) {
-                let oldDX = dirX; dirX = dirX * Math.cos(-rotSpeed) - dirY * Math.sin(-rotSpeed); dirY = oldDX * Math.sin(-rotSpeed) + dirY * Math.cos(-rotSpeed);
-                let oldPX = planeX; planeX = planeX * Math.cos(-rotSpeed) - planeY * Math.sin(-rotSpeed); planeY = oldPX * Math.sin(-rotSpeed) + planeY * Math.cos(-rotSpeed);
-            }
-            let mDir = keys['KeyW'] || keys['ArrowUp'] ? 1 : (keys['KeyS'] || keys['ArrowDown'] ? -1 : 0);
-            if(mDir !== 0) {
-                let nX = posX + dirX * moveSpeed * mDir, nY = posY + dirY * moveSpeed * mDir;
-                if(worldMap[Math.floor(nX)][Math.floor(posY)] !== 1) posX = nX;
-                if(worldMap[Math.floor(posX)][Math.floor(nY)] !== 1) posY = nY;
-            }
-            players[myId].x = posX; players[myId].y = posY;
-            let mx = Math.floor(posX), my = Math.floor(posY);
-            if(worldMap[mx][my] === 2) {
-                let msg = { type: 'collect', id: myId, cx: mx, cy: my };
-                if (hostConn) hostConn.send(msg); else handleData(msg);
-            }
-        }
-
-        // IA Slender (solo Host)
-        if(!hostConn && slenderman.active) {
-            let cl = null, mD = 999;
-            for(let id in players) if(!players[id].isDead) {
-                let d = Math.hypot(players[id].x - slenderman.x, players[id].y - slenderman.y);
-                if(d < mD) { mD = d; cl = players[id]; }
-            }
-            if(cl) {
-                let ang = Math.atan2(cl.y - slenderman.y, cl.x - slenderman.x);
-                slenderman.x += Math.cos(ang) * 0.026; slenderman.y += Math.sin(ang) * 0.026;
-            }
-            for(let id in players) if(!players[id].isDead && Math.hypot(players[id].x - slenderman.x, players[id].y - slenderman.y) < 0.4) {
-                players[id].isDead = true; if(id === myId) isDead = true; syncToAll();
-            }
-        }
-
+        handleMovement();
         requestAnimationFrame(render);
-    }
-    
-    function updateLobbyUI() {
-        document.getElementById('start-btn').style.display = (Object.keys(players).length >= 2 && !hostConn) ? 'block' : 'none';
     }
 
     chatInput.addEventListener('keydown', e => {
         if (e.key === 'Enter' && chatInput.value.trim() !== "") {
             const msg = { type: 'chat', sender: myId, text: chatInput.value };
-            addChatMessage(myId, chatInput.value); broadcast(msg); chatInput.value = "";
+            addChatMessage(myId, chatInput.value);
+            broadcast(msg);
+            chatInput.value = "";
         }
     });
 
